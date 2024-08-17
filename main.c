@@ -1,3 +1,5 @@
+#include <ctype.h>
+
 #include "iouring_server.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +22,16 @@ void on_data_handler(struct sockaddr_in *addr, const char *data, size_t len) {
     char ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &(addr->sin_addr), ip, INET_ADDRSTRLEN);
     printf("Received %zu bytes from %s:%d\n", len, ip, ntohs(addr->sin_port));
-    printf("Data: %.*s\n", (int)len, data);
+    printf("Data: ");
+    for (size_t i = 0; i < len && i < 100; i++) {  // 限制打印的数据量
+        if (isprint(data[i])) {
+            putchar(data[i]);
+        } else {
+            printf("\\x%02x", (unsigned char)data[i]);
+        }
+    }
+    if (len > 100) printf("...");
+    printf("\n");
 }
 
 int main(int argc, char *argv[]) {

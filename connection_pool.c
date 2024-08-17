@@ -59,12 +59,9 @@ void put_connection(struct connection* conn) {
 
 void clean_pool() {
     pthread_mutex_lock(&pool.mutex);
-    int to_remove = pool.count / 2;
-    for (int i = 0; i < to_remove; i++) {
-        if (pool.count > 0) {
-            struct connection* conn = pool.connections[--pool.count];
-            free(conn);
-        }
+    while (pool.count > 0) {
+        struct connection* conn = pool.connections[--pool.count];
+        free(conn);
     }
     pthread_mutex_unlock(&pool.mutex);
 }

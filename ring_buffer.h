@@ -3,12 +3,14 @@
 
 #include <stdatomic.h>
 #include <stddef.h>
+#include <pthread.h>
 
 typedef struct {
     char *buffer;
     size_t capacity;
     atomic_size_t read_index;
     atomic_size_t write_index;
+    pthread_mutex_t mutex;
 } RingBuffer;
 
 void ring_buffer_init(RingBuffer* rb, size_t initial_size);
