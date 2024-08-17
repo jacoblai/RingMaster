@@ -1,44 +1,46 @@
 #include "connection_pool.h"
 #include "ring_buffer.h"
-#include "iouring_server.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 #define INITIAL_BUFFER_SIZE 1024
 
-static ConnectionPool pool = {0};
+MemoryPool* connection_pool = NULL;
 
-void init_pool() {
-    pthread_mutex_init(&pool.mutex, NULL);
-    pool.connections = calloc(max_connections, sizeof(struct connection*));
-    if (!pool.connections) {
-        fprintf(stderr, "Failed to allocate connection pool\n");
+void init_connection_pool(size_t initial_size) {
+    connection_pool = memory_pool_create(sizeof(struct connection), initial_size, 64);  // 64字节对齐
+    if (!connection_pool) {
+        fprintf(stderr, "Failed to create connection pool\n");
         exit(1);
     }
 }
 
 struct connection* get_connection() {
-    struct connection* conn = NULL;
-
-    pthread_mutex_lock(&pool.mutex);
-    if (pool.count > 0) {
-        conn = pool.connections[--pool.count];
+    if (!connection_pool) {
+        fprintf(stderr, "Connection pool not initialized\n");
+        return NULL;
     }
-    pthread_mutex_unlock(&pool.mutex);
 
+    struct connection* conn = memory_pool_alloc(connection_pool);
     if (conn == NULL) {
-        conn = malloc(sizeof(struct connection));
-        if (conn == NULL) {
-            fprintf(stderr, "Failed to allocate new connection\n");
-            return NULL;
-        }
+        fprintf(stderr, "Failed to allocate new connection from pool\n");
+        return NULL;
     }
 
-    if (conn) {
-        conn->fd = -1;
-        conn->state = CONN_STATE_READING;
-        ring_buffer_init(&conn->read_buffer, INITIAL_BUFFER_SIZE);
-        ring_buffer_init(&conn->write_buffer, INITIAL_BUFFER_SIZE);
+    memset(conn, 0, sizeof(struct connection));
+    conn->fd = -1;
+    conn->state = CONN_STATE_READING;
+
+    ring_buffer_init(&conn->read_buffer, INITIAL_BUFFER_SIZE);
+    ring_buffer_init(&conn->write_buffer, INITIAL_BUFFER_SIZE);
+
+    // Check if the buffers were initialized successfully
+    if (conn->read_buffer.buffer == NULL || conn->write_buffer.buffer == NULL) {
+        fprintf(stderr, "Failed to initialize buffers\n");
+        memory_pool_free(connection_pool, conn);
+        return NULL;
     }
 
     return conn;
@@ -46,22 +48,25 @@ struct connection* get_connection() {
 
 void put_connection(struct connection* conn) {
     if (!conn) return;
-
-    pthread_mutex_lock(&pool.mutex);
-    if (pool.count < max_connections) {
-        pool.connections[pool.count++] = conn;
-        pthread_mutex_unlock(&pool.mutex);
-    } else {
-        pthread_mutex_unlock(&pool.mutex);
-        free(conn);
+    if (!connection_pool) {
+        fprintf(stderr, "Connection pool not initialized\n");
+        return;
     }
+
+    if (conn->fd >= 0) {
+        close(conn->fd);
+    }
+    ring_buffer_destroy(&conn->read_buffer);
+    ring_buffer_destroy(&conn->write_buffer);
+
+    memset(conn, 0, sizeof(struct connection));
+
+    memory_pool_free(connection_pool, conn);
 }
 
-void clean_pool() {
-    pthread_mutex_lock(&pool.mutex);
-    while (pool.count > 0) {
-        struct connection* conn = pool.connections[--pool.count];
-        free(conn);
+void clean_connection_pool() {
+    if (connection_pool) {
+        memory_pool_destroy(connection_pool);
+        connection_pool = NULL;
     }
-    pthread_mutex_unlock(&pool.mutex);
 }

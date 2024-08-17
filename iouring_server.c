@@ -1,5 +1,6 @@
 #include "iouring_server.h"
 #include "memory_pool.h"
+#include "connection_pool.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +21,6 @@ int max_connections = MAX_CONNECTIONS;
 static struct io_uring ring;
 static int server_socket;
 static struct connection** connections = NULL;
-static MemoryPool* connection_pool;
 
 static on_connect_cb on_connect = NULL;
 static on_disconnect_cb on_disconnect = NULL;
@@ -50,11 +50,10 @@ static int set_system_limits() {
     if (setrlimit(RLIMIT_NOFILE, &rl) == -1) {
         perror("setrlimit(RLIMIT_NOFILE)");
         fprintf(stderr, "Warning: Could not increase file descriptor limit. Continuing with system default.\n");
-        // 获取当前限制
         if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
             printf("Current file descriptor limit: %llu\n", (unsigned long long)rl.rlim_cur);
         }
-        return 0;  // 继续运行，而不是返回错误
+        return 0;
     }
 
     printf("File descriptor limit set to %llu\n", (unsigned long long)rl.rlim_cur);
@@ -115,7 +114,7 @@ static int add_accept_request() {
 }
 
 static struct connection* create_connection(int fd) {
-    struct connection* conn = memory_pool_alloc(connection_pool);
+    struct connection* conn = get_connection();
     if (!conn) {
         fprintf(stderr, "Failed to allocate connection from pool\n");
         return NULL;
@@ -123,8 +122,6 @@ static struct connection* create_connection(int fd) {
 
     conn->fd = fd;
     conn->state = CONN_STATE_READING;
-    ring_buffer_init(&conn->read_buffer, INITIAL_BUFFER_SIZE);
-    ring_buffer_init(&conn->write_buffer, INITIAL_BUFFER_SIZE);
 
     return conn;
 }
@@ -137,9 +134,7 @@ static void close_and_free_connection(struct connection *conn) {
         if (connections[fd] == conn) {
             connections[fd] = NULL;
             close(fd);
-            ring_buffer_destroy(&conn->read_buffer);
-            ring_buffer_destroy(&conn->write_buffer);
-            memory_pool_free(connection_pool, conn);
+            put_connection(conn);
             if (on_disconnect) {
                 on_disconnect(&conn->addr);
             }
@@ -292,17 +287,12 @@ int start_server(int port) {
         return 1;
     }
 
-    connection_pool = memory_pool_create(sizeof(struct connection), 1000);
-    if (!connection_pool) {
-        fprintf(stderr, "Failed to create connection pool\n");
-        free(connections);
-        return 1;
-    }
+    init_connection_pool(1000);  // Initialize connection pool with 1000 initial connections
 
     server_socket = setup_listening_socket(port);
     if (server_socket < 0) {
         fprintf(stderr, "Failed to set up listening socket\n");
-        memory_pool_destroy(connection_pool);
+        clean_connection_pool();
         free(connections);
         return 1;
     }
@@ -310,7 +300,7 @@ int start_server(int port) {
     if (io_uring_queue_init(QUEUE_DEPTH, &ring, 0) < 0) {
         perror("io_uring_queue_init");
         close(server_socket);
-        memory_pool_destroy(connection_pool);
+        clean_connection_pool();
         free(connections);
         return 1;
     }
@@ -319,7 +309,7 @@ int start_server(int port) {
         fprintf(stderr, "Failed to add initial accept request\n");
         io_uring_queue_exit(&ring);
         close(server_socket);
-        memory_pool_destroy(connection_pool);
+        clean_connection_pool();
         free(connections);
         return 1;
     }
@@ -353,7 +343,7 @@ int start_server(int port) {
         }
     }
 
-    memory_pool_destroy(connection_pool);
+    clean_connection_pool();
     free(connections);
     return 0;
 }
