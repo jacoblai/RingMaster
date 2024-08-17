@@ -1,8 +1,8 @@
 #ifndef CONNECTION_POOL_H
 #define CONNECTION_POOL_H
 
-#include "iouring_server.h"
 #include <pthread.h>
+#include "iouring_server.h"
 
 typedef struct {
     struct connection **connections;

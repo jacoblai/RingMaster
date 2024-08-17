@@ -1,9 +1,10 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include "connection_pool.h"
 #include "ring_buffer.h"
 #include "iouring_server.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+#define INITIAL_BUFFER_SIZE 1024
 
 static ConnectionPool pool = {0};
 
@@ -27,13 +28,17 @@ struct connection* get_connection() {
 
     if (conn == NULL) {
         conn = malloc(sizeof(struct connection));
+        if (conn == NULL) {
+            fprintf(stderr, "Failed to allocate new connection\n");
+            return NULL;
+        }
     }
 
     if (conn) {
         conn->fd = -1;
         conn->state = CONN_STATE_READING;
-        ring_buffer_init(&conn->read_buffer);
-        ring_buffer_init(&conn->write_buffer);
+        ring_buffer_init(&conn->read_buffer, INITIAL_BUFFER_SIZE);
+        ring_buffer_init(&conn->write_buffer, INITIAL_BUFFER_SIZE);
     }
 
     return conn;
@@ -56,8 +61,10 @@ void clean_pool() {
     pthread_mutex_lock(&pool.mutex);
     int to_remove = pool.count / 2;
     for (int i = 0; i < to_remove; i++) {
-        struct connection* conn = pool.connections[--pool.count];
-        free(conn);
+        if (pool.count > 0) {
+            struct connection* conn = pool.connections[--pool.count];
+            free(conn);
+        }
     }
     pthread_mutex_unlock(&pool.mutex);
 }

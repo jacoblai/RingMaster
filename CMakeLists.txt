@@ -13,8 +13,13 @@ find_library(URING_LIBRARY uring)
 add_executable(iouring_server
         main.c
         iouring_server.c
+        iouring_server.h
         connection_pool.c
+        connection_pool.h
         ring_buffer.c
+        ring_buffer.h
+        memory_pool.c
+        memory_pool.h
 )
 
 # 链接 liburing 和 pthread
