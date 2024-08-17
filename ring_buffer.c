@@ -79,8 +79,8 @@ size_t ring_buffer_free_space(const RingBuffer* rb) {
 }
 
 size_t ring_buffer_used_space(const RingBuffer* rb) {
-    size_t write_index = atomic_load(&rb->write_index);
-    size_t read_index = atomic_load(&rb->read_index);
+    size_t write_index = atomic_load_explicit(&rb->write_index, memory_order_acquire);
+    size_t read_index = atomic_load_explicit(&rb->read_index, memory_order_acquire);
     return (write_index >= read_index) ? (write_index - read_index) :
            (SIZE_MAX - read_index + write_index + 1);
 }
@@ -99,7 +99,7 @@ int ring_buffer_write(RingBuffer* rb, const char* data, size_t len) {
         }
     }
 
-    size_t write_index = atomic_load(&rb->write_index) % rb->capacity;
+    size_t write_index = atomic_load_explicit(&rb->write_index, memory_order_relaxed) % rb->capacity;
     size_t end = (write_index + len) % rb->capacity;
 
     if (end > write_index) {
@@ -110,7 +110,7 @@ int ring_buffer_write(RingBuffer* rb, const char* data, size_t len) {
         memcpy(rb->buffer, data + first_part, len - first_part);
     }
 
-    atomic_fetch_add(&rb->write_index, len);
+    atomic_fetch_add_explicit(&rb->write_index, len, memory_order_release);
 
     pthread_mutex_unlock(&rb->mutex);
     return 0;
@@ -121,7 +121,7 @@ size_t ring_buffer_read(RingBuffer* rb, char* data, size_t len) {
 
     size_t available = ring_buffer_used_space(rb);
     size_t read_size = (len < available) ? len : available;
-    size_t read_index = atomic_load(&rb->read_index) % rb->capacity;
+    size_t read_index = atomic_load_explicit(&rb->read_index, memory_order_relaxed) % rb->capacity;
 
     size_t end = (read_index + read_size) % rb->capacity;
 
@@ -133,12 +133,13 @@ size_t ring_buffer_read(RingBuffer* rb, char* data, size_t len) {
         memcpy(data + first_part, rb->buffer, read_size - first_part);
     }
 
-    atomic_fetch_add(&rb->read_index, read_size);
+    atomic_fetch_add_explicit(&rb->read_index, read_size, memory_order_release);
 
     // If we've read all the data, reset indices to avoid overflow
-    if (atomic_load(&rb->read_index) == atomic_load(&rb->write_index)) {
-        atomic_store(&rb->read_index, 0);
-        atomic_store(&rb->write_index, 0);
+    if (atomic_load_explicit(&rb->read_index, memory_order_acquire) ==
+        atomic_load_explicit(&rb->write_index, memory_order_acquire)) {
+        atomic_store_explicit(&rb->read_index, 0, memory_order_relaxed);
+        atomic_store_explicit(&rb->write_index, 0, memory_order_relaxed);
     }
 
     pthread_mutex_unlock(&rb->mutex);

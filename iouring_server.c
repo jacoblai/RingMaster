@@ -84,10 +84,17 @@ static void close_and_free_connection(ResourceManager *rm, struct connection *co
 
             struct sockaddr_in client_addr = conn->addr;
 
+            // 保存当前的 errno
+            int saved_errno = errno;
+
             if (on_disconnect) {
                 on_disconnect(&client_addr);
             }
 
+            // 恢复 errno
+            errno = saved_errno;
+
+            // 确保这些操作总是被执行
             ring_buffer_destroy(&conn->read_buffer);
             ring_buffer_destroy(&conn->write_buffer);
             memory_pool_free(rm->connection_pool, conn);
@@ -142,17 +149,32 @@ static int add_write_request(struct io_uring *ring, struct connection *conn) {
 }
 
 static void handle_client_data(ResourceManager *rm, struct connection *conn, ssize_t bytes_read) {
+    if (bytes_read <= 0 || bytes_read > MAX_MESSAGE_LEN) {
+        // 处理错误情况
+        fprintf(stderr, "Invalid data received: %zd bytes\n", bytes_read);
+        close_and_free_connection(rm, conn);
+        return;
+    }
+
     atomic_fetch_add(&conn->read_buffer.write_index, bytes_read);
 
     if (on_data) {
         char temp_buffer[MAX_MESSAGE_LEN];
         size_t read_size = ring_buffer_read(&conn->read_buffer, temp_buffer, bytes_read);
-        on_data(&conn->addr, temp_buffer, read_size);
-
-        ring_buffer_write(&conn->write_buffer, temp_buffer, read_size);
+        if (read_size > 0) {
+            on_data(&conn->addr, temp_buffer, read_size);
+            if (ring_buffer_write(&conn->write_buffer, temp_buffer, read_size) != 0) {
+                fprintf(stderr, "Failed to write data to buffer\n");
+                close_and_free_connection(rm, conn);
+                return;
+            }
+        }
     }
 
-    add_write_request(rm->ring, conn);
+    if (add_write_request(rm->ring, conn) != 0) {
+        fprintf(stderr, "Failed to add write request\n");
+        close_and_free_connection(rm, conn);
+    }
 }
 
 static void handle_client_io(ResourceManager *rm, struct io_uring_cqe *cqe) {
