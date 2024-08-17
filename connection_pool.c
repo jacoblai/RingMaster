@@ -34,11 +34,16 @@ struct connection* get_connection() {
     conn->state = CONN_STATE_READING;
 
     ring_buffer_init(&conn->read_buffer, INITIAL_BUFFER_SIZE);
-    ring_buffer_init(&conn->write_buffer, INITIAL_BUFFER_SIZE);
+    if (conn->read_buffer.buffer == NULL) {
+        fprintf(stderr, "Failed to initialize read buffer\n");
+        memory_pool_free(connection_pool, conn);
+        return NULL;
+    }
 
-    // Check if the buffers were initialized successfully
-    if (conn->read_buffer.buffer == NULL || conn->write_buffer.buffer == NULL) {
-        fprintf(stderr, "Failed to initialize buffers\n");
+    ring_buffer_init(&conn->write_buffer, INITIAL_BUFFER_SIZE);
+    if (conn->write_buffer.buffer == NULL) {
+        fprintf(stderr, "Failed to initialize write buffer\n");
+        ring_buffer_destroy(&conn->read_buffer);  // Clean up the read buffer
         memory_pool_free(connection_pool, conn);
         return NULL;
     }
