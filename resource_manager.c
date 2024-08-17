@@ -6,7 +6,11 @@
 #include <netinet/in.h>
 #include <string.h>
 
-// 设置监听套接字
+// 在文件开头添加以下宏定义
+#ifndef SO_REUSEPORT
+#define SO_REUSEPORT 15
+#endif
+
 static int setup_listening_socket(int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock == -1) {
@@ -14,29 +18,33 @@ static int setup_listening_socket(int port) {
         return -1;
     }
 
-    // 设置套接字选项，允许地址重用
+    // 启用 SO_REUSEADDR
     int enable = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-        handle_error(ERR_SOCKET_CREATE_FAILED, "setsockopt(SO_REUSEADDR) failed for server socket");
+        handle_error(ERR_SOCKET_CREATE_FAILED, "setsockopt(SO_REUSEADDR) failed");
         close(sock);
         return -1;
     }
 
-    // 设置服务器地址
+    // 启用 SO_REUSEPORT
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int)) < 0) {
+        handle_error(ERR_SOCKET_CREATE_FAILED, "setsockopt(SO_REUSEPORT) failed");
+        close(sock);
+        return -1;
+    }
+
     struct sockaddr_in addr = {
         .sin_family = AF_INET,
         .sin_port = htons(port),
         .sin_addr.s_addr = INADDR_ANY
     };
 
-    // 绑定套接字
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        handle_error(ERR_SOCKET_BIND_FAILED, "Failed to bind server socket to port");
+        handle_error(ERR_SOCKET_BIND_FAILED, "Failed to bind server socket");
         close(sock);
         return -1;
     }
 
-    // 开始监听
     if (listen(sock, SOMAXCONN) < 0) {
         handle_error(ERR_SOCKET_LISTEN_FAILED, "Failed to listen on server socket");
         close(sock);
