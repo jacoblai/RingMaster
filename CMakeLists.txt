@@ -1,12 +1,13 @@
 cmake_minimum_required(VERSION 3.10)
 project(iouring_server C)
 
+# 设置 C 标准为 C11
 set(CMAKE_C_STANDARD 11)
 
 # 添加编译标志
 add_compile_options(-Wall -Wextra -g)
 
-# 查找 liburing
+# 查找 liburing 库
 find_library(URING_LIBRARY uring)
 
 # 添加可执行文件
@@ -26,5 +27,5 @@ add_executable(iouring_server
         resource_manager.h
 )
 
-# 链接 liburing 和 pthread
+# 链接 liburing 和 pthread 库
 target_link_libraries(iouring_server ${URING_LIBRARY} pthread)

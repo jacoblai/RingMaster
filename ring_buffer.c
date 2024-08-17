@@ -6,27 +6,28 @@
 #define MIN_BUFFER_SIZE 64
 #define MAX_BUFFER_SIZE ((size_t)-1 >> 1)  // 最大缓冲区大小为 SIZE_MAX / 2
 
+// 调整环形缓冲区大小
 static int ring_buffer_resize(RingBuffer* rb, size_t new_size) {
     if (new_size <= rb->capacity) {
-        return -1;  // New size must be larger
+        return -1;  // 新大小必须大于当前容量
     }
 
     if (new_size > MAX_BUFFER_SIZE) {
-        return -1;  // Prevent overflow
+        return -1;  // 防止溢出
     }
 
     char* new_buffer = realloc(rb->buffer, new_size);
     if (new_buffer == NULL) {
-        return -1;  // Resize failed
+        return -1;  // 调整大小失败
     }
 
-    // If the data wraps around in the old buffer, we need to rearrange it
+    // 如果数据在旧缓冲区中环绕，需要重新排列
     size_t used = ring_buffer_used_space(rb);
     size_t read_index = atomic_load(&rb->read_index) % rb->capacity;
     size_t write_index = atomic_load(&rb->write_index) % rb->capacity;
 
     if (write_index < read_index) {
-        // Data wraps around, need to make it contiguous
+        // 数据环绕，需要使其连续
         memmove(new_buffer + rb->capacity, new_buffer, write_index);
         atomic_store(&rb->write_index, read_index + used);
     }
@@ -38,6 +39,7 @@ static int ring_buffer_resize(RingBuffer* rb, size_t new_size) {
     return 0;
 }
 
+// 初始化环形缓冲区
 void ring_buffer_init(RingBuffer* rb, size_t initial_size) {
     if (initial_size < MIN_BUFFER_SIZE) {
         initial_size = MIN_BUFFER_SIZE;
@@ -48,7 +50,7 @@ void ring_buffer_init(RingBuffer* rb, size_t initial_size) {
 
     rb->buffer = malloc(initial_size);
     if (rb->buffer == NULL) {
-        // Handle allocation failure
+        // 处理分配失败
         rb->capacity = 0;
         atomic_init(&rb->read_index, 0);
         atomic_init(&rb->write_index, 0);
@@ -59,9 +61,9 @@ void ring_buffer_init(RingBuffer* rb, size_t initial_size) {
     atomic_init(&rb->read_index, 0);
     atomic_init(&rb->write_index, 0);
 
-    // Initialize the mutex
+    // 初始化互斥锁
     if (pthread_mutex_init(&rb->mutex, NULL) != 0) {
-        // Handle mutex initialization failure
+        // 处理互斥锁初始化失败
         free(rb->buffer);
         rb->buffer = NULL;
         rb->capacity = 0;
@@ -69,6 +71,7 @@ void ring_buffer_init(RingBuffer* rb, size_t initial_size) {
     }
 }
 
+// 销毁环形缓冲区
 void ring_buffer_destroy(RingBuffer* rb) {
     if (rb->buffer != NULL) {
         free(rb->buffer);
@@ -77,15 +80,17 @@ void ring_buffer_destroy(RingBuffer* rb) {
         atomic_store(&rb->read_index, 0);
         atomic_store(&rb->write_index, 0);
 
-        // Destroy the mutex
+        // 销毁互斥锁
         pthread_mutex_destroy(&rb->mutex);
     }
 }
 
+// 获取环形缓冲区中的可用空间
 size_t ring_buffer_free_space(const RingBuffer* rb) {
     return rb->capacity - ring_buffer_used_space(rb);
 }
 
+// 获取环形缓冲区中已使用的空间
 size_t ring_buffer_used_space(const RingBuffer* rb) {
     size_t write_index = atomic_load_explicit(&rb->write_index, memory_order_acquire);
     size_t read_index = atomic_load_explicit(&rb->read_index, memory_order_acquire);
@@ -93,6 +98,7 @@ size_t ring_buffer_used_space(const RingBuffer* rb) {
            (SIZE_MAX - read_index + write_index + 1);
 }
 
+// 写入数据到环形缓冲区
 int ring_buffer_write(RingBuffer* rb, const char* data, size_t len) {
     pthread_mutex_lock(&rb->mutex);
 
@@ -102,13 +108,13 @@ int ring_buffer_write(RingBuffer* rb, const char* data, size_t len) {
         while (new_size < required_size) {
             if (new_size > MAX_BUFFER_SIZE / 2) {
                 pthread_mutex_unlock(&rb->mutex);
-                return -1;  // Prevent overflow
+                return -1;  // 防止溢出
             }
-            new_size = new_size * 3 / 2;  // Grow by 50% each time
+            new_size = new_size * 3 / 2;  // 每次增长50%
         }
         if (ring_buffer_resize(rb, new_size) != 0) {
             pthread_mutex_unlock(&rb->mutex);
-            return -1;  // Resize failed
+            return -1;  // 调整大小失败
         }
     }
 
@@ -129,6 +135,7 @@ int ring_buffer_write(RingBuffer* rb, const char* data, size_t len) {
     return 0;
 }
 
+// 从环形缓冲区读取数据
 size_t ring_buffer_read(RingBuffer* rb, char* data, size_t len) {
     size_t available = ring_buffer_used_space(rb);
     size_t read_size = (len < available) ? len : available;
@@ -152,7 +159,7 @@ size_t ring_buffer_read(RingBuffer* rb, char* data, size_t len) {
 
     atomic_fetch_add_explicit(&rb->read_index, read_size, memory_order_release);
 
-    // If we've read all the data, reset indices to avoid overflow
+    // 如果我们读取了所有数据，重置索引以避免溢出
     if (atomic_load_explicit(&rb->read_index, memory_order_acquire) ==
         atomic_load_explicit(&rb->write_index, memory_order_acquire)) {
         atomic_store_explicit(&rb->read_index, 0, memory_order_relaxed);
@@ -163,6 +170,7 @@ size_t ring_buffer_read(RingBuffer* rb, char* data, size_t len) {
     return read_size;
 }
 
+// 查看环形缓冲区中的数据而不移除
 int ring_buffer_peek(const RingBuffer* rb, char* data, size_t len) {
     size_t available = ring_buffer_used_space(rb);
     size_t peek_size = (len < available) ? len : available;

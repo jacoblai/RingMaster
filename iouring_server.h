@@ -13,15 +13,18 @@
 
 extern int max_connections;
 
+// 回调函数类型定义
 typedef void (*on_connect_cb)(struct sockaddr_in *);
 typedef void (*on_disconnect_cb)(struct sockaddr_in *);
 typedef void (*on_data_cb)(struct sockaddr_in *, const char *, size_t);
 
+// 连接状态枚举
 enum connection_state {
     CONN_STATE_READING,
     CONN_STATE_WRITING
 };
 
+// 连接结构体
 struct connection {
     int fd;
     struct sockaddr_in addr;
@@ -31,11 +34,15 @@ struct connection {
     int buffer_id;  // 用于零拷贝操作的缓冲区ID
 };
 
+// 设置回调函数
 void set_on_connect(on_connect_cb cb);
 void set_on_disconnect(on_disconnect_cb cb);
 void set_on_data(on_data_cb cb);
 
+// 启动服务器
 int start_server(int port);
+
+// 优雅关闭服务器
 void graceful_shutdown(void);
 
 #endif // IOURING_SERVER_H

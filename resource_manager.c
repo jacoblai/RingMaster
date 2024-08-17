@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include <string.h>
 
+// 设置监听套接字
 static int setup_listening_socket(int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock == -1) {
@@ -13,6 +14,7 @@ static int setup_listening_socket(int port) {
         return -1;
     }
 
+    // 设置套接字选项，允许地址重用
     int enable = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
         handle_error(ERR_SOCKET_CREATE_FAILED, "setsockopt(SO_REUSEADDR) failed for server socket");
@@ -20,18 +22,21 @@ static int setup_listening_socket(int port) {
         return -1;
     }
 
+    // 设置服务器地址
     struct sockaddr_in addr = {
         .sin_family = AF_INET,
         .sin_port = htons(port),
         .sin_addr.s_addr = INADDR_ANY
     };
 
+    // 绑定套接字
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         handle_error(ERR_SOCKET_BIND_FAILED, "Failed to bind server socket to port");
         close(sock);
         return -1;
     }
 
+    // 开始监听
     if (listen(sock, SOMAXCONN) < 0) {
         handle_error(ERR_SOCKET_LISTEN_FAILED, "Failed to listen on server socket");
         close(sock);
@@ -41,6 +46,7 @@ static int setup_listening_socket(int port) {
     return sock;
 }
 
+// 初始化资源管理器
 void init_resource_manager(ResourceManager* rm, int port, int max_connections) {
     rm->server_socket = -1;
     rm->ring = NULL;
@@ -50,6 +56,7 @@ void init_resource_manager(ResourceManager* rm, int port, int max_connections) {
     rm->max_connections = max_connections;
 }
 
+// 清理资源管理器
 void cleanup_resource_manager(ResourceManager* rm) {
     if (rm->server_socket >= 0) {
         close(rm->server_socket);
@@ -66,6 +73,7 @@ void cleanup_resource_manager(ResourceManager* rm) {
     }
 }
 
+// 分配资源
 int allocate_resource(ResourceManager* rm, ResourceType type) {
     switch (type) {
         case RESOURCE_SERVER_SOCKET:
@@ -114,6 +122,7 @@ int allocate_resource(ResourceManager* rm, ResourceType type) {
     return 0;
 }
 
+// 释放资源
 void free_resource(ResourceManager* rm, ResourceType type) {
     switch (type) {
         case RESOURCE_SERVER_SOCKET:
