@@ -32,6 +32,7 @@ struct connection* get_connection() {
     memset(conn, 0, sizeof(struct connection));
     conn->fd = -1;
     conn->state = CONN_STATE_READING;
+    conn->buffer_id = -1;  // Initialize buffer_id to -1
 
     ring_buffer_init(&conn->read_buffer, INITIAL_BUFFER_SIZE);
     if (conn->read_buffer.buffer == NULL) {
@@ -65,6 +66,8 @@ void put_connection(struct connection* conn) {
     ring_buffer_destroy(&conn->write_buffer);
 
     memset(conn, 0, sizeof(struct connection));
+    conn->fd = -1;
+    conn->buffer_id = -1;  // Reset buffer_id to -1
 
     memory_pool_free(connection_pool, conn);
 }

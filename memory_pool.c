@@ -14,6 +14,7 @@ struct MemoryPool {
     size_t block_size;
     size_t alignment;
     MemoryBlock* free_blocks;
+    MemoryBlock* all_blocks;  // New: Track all allocated blocks
     pthread_mutex_t lock;
 };
 
@@ -31,6 +32,7 @@ MemoryPool* memory_pool_create(size_t block_size, size_t initial_blocks, size_t 
     pool->block_size = align_size(MAX(block_size, sizeof(MemoryBlock)), alignment);
     pool->alignment = alignment;
     pool->free_blocks = NULL;
+    pool->all_blocks = NULL;  // Initialize all_blocks
 
     if (pthread_mutex_init(&pool->lock, NULL) != 0) {
         free(pool);
@@ -46,6 +48,11 @@ MemoryPool* memory_pool_create(size_t block_size, size_t initial_blocks, size_t 
         MemoryBlock* mb = (MemoryBlock*)block;
         mb->next = pool->free_blocks;
         pool->free_blocks = mb;
+
+        // Add to all_blocks list
+        MemoryBlock* all_mb = (MemoryBlock*)block;
+        all_mb->next = pool->all_blocks;
+        pool->all_blocks = all_mb;
     }
 
     return pool;
@@ -60,6 +67,9 @@ void* memory_pool_alloc(MemoryPool* pool) {
             pthread_mutex_unlock(&pool->lock);
             return NULL;
         }
+        MemoryBlock* mb = (MemoryBlock*)new_block;
+        mb->next = pool->all_blocks;  // Add to all_blocks list
+        pool->all_blocks = mb;
         pthread_mutex_unlock(&pool->lock);
         return new_block;
     }
@@ -86,7 +96,7 @@ void memory_pool_free(MemoryPool* pool, void* ptr) {
 void memory_pool_destroy(MemoryPool* pool) {
     pthread_mutex_lock(&pool->lock);
 
-    MemoryBlock* block = pool->free_blocks;
+    MemoryBlock* block = pool->all_blocks;
     while (block) {
         MemoryBlock* next = block->next;
         free(block);
