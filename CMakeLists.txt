@@ -14,6 +14,7 @@ add_executable(iouring_server
         main.c
         iouring_server.c
         connection_pool.c
+        ring_buffer.c
 )
 
 # 链接 liburing 和 pthread

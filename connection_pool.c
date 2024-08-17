@@ -1,4 +1,5 @@
 #include "connection_pool.h"
+#include "ring_buffer.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -19,25 +20,13 @@ struct connection* get_connection() {
 
     if (conn == NULL) {
         conn = malloc(sizeof(struct connection));
-        if (conn) {
-            conn->read_buffer = malloc(READ_SZ);
-            conn->write_buffer = malloc(READ_SZ);
-            if (!conn->read_buffer || !conn->write_buffer) {
-                free(conn->read_buffer);
-                free(conn->write_buffer);
-                free(conn);
-                return NULL;
-            }
-        }
     }
 
     if (conn) {
         conn->fd = -1;
         conn->state = CONN_STATE_READING;
-        conn->read_buffer_size = READ_SZ;
-        conn->write_buffer_size = READ_SZ;
-        conn->bytes_read = 0;
-        conn->bytes_to_write = 0;
+        ring_buffer_init(&conn->read_buffer);
+        ring_buffer_init(&conn->write_buffer);
     }
 
     return conn;
@@ -52,8 +41,7 @@ void put_connection(struct connection* conn) {
         pthread_mutex_unlock(&pool.mutex);
     } else {
         pthread_mutex_unlock(&pool.mutex);
-        free(conn->read_buffer);
-        free(conn->write_buffer);
+        // 直接释放整个 connection 结构体
         free(conn);
     }
 }
@@ -63,8 +51,7 @@ void clean_pool() {
     int to_remove = pool.count / 2;
     for (int i = 0; i < to_remove; i++) {
         struct connection* conn = pool.connections[--pool.count];
-        free(conn->read_buffer);
-        free(conn->write_buffer);
+        // 不需要释放 read_buffer 和 write_buffer，因为它们是结构体的一部分
         free(conn);
     }
     pthread_mutex_unlock(&pool.mutex);

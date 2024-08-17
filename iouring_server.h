@@ -2,10 +2,9 @@
 #define IOURING_SERVER_H
 
 #include <netinet/in.h>
+#include "ring_buffer.h"
 
 #define MAX_CONNECTIONS 1024
-#define BUFFER_SIZE 8192
-#define READ_SZ BUFFER_SIZE
 
 typedef void (*on_connect_cb)(struct sockaddr_in *);
 typedef void (*on_disconnect_cb)(struct sockaddr_in *);
@@ -19,12 +18,8 @@ enum connection_state {
 struct connection {
     int fd;
     struct sockaddr_in addr;
-    char *read_buffer;
-    char *write_buffer;
-    size_t read_buffer_size;
-    size_t write_buffer_size;
-    size_t bytes_read;
-    size_t bytes_to_write;
+    RingBuffer read_buffer;
+    RingBuffer write_buffer;
     enum connection_state state;
 };
 

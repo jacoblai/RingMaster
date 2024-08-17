@@ -86,7 +86,10 @@ static int add_read_request(struct connection *conn) {
         return -1;
     }
 
-    io_uring_prep_recv(sqe, conn->fd, conn->read_buffer, conn->read_buffer_size, 0);
+    char *buf = &conn->read_buffer.buffer[conn->read_buffer.write_index & RING_BUFFER_MASK];
+    size_t buf_size = ring_buffer_free_space(&conn->read_buffer);
+
+    io_uring_prep_recv(sqe, conn->fd, buf, buf_size, 0);
     io_uring_sqe_set_data(sqe, conn);
     conn->state = CONN_STATE_READING;
     return 0;
@@ -99,7 +102,15 @@ static int add_write_request(struct connection *conn) {
         return -1;
     }
 
-    io_uring_prep_send(sqe, conn->fd, conn->write_buffer, conn->bytes_to_write, 0);
+    size_t data_size = ring_buffer_used_space(&conn->write_buffer);
+    if (data_size == 0) {
+        // 如果没有数据要写，就切换回读取状态
+        return add_read_request(conn);
+    }
+
+    char *buf = &conn->write_buffer.buffer[conn->write_buffer.read_index & RING_BUFFER_MASK];
+
+    io_uring_prep_send(sqe, conn->fd, buf, data_size, 0);
     io_uring_sqe_set_data(sqe, conn);
     conn->state = CONN_STATE_WRITING;
     return 0;
@@ -123,18 +134,15 @@ static void close_and_free_connection(struct connection *conn) {
 
 static void handle_client_data(struct connection *conn, ssize_t bytes_read) {
     if (on_data) {
-        on_data(&conn->addr, conn->read_buffer, bytes_read);
+        char temp_buffer[RING_BUFFER_SIZE];
+        size_t read_size = ring_buffer_read(&conn->read_buffer, temp_buffer, bytes_read);
+        on_data(&conn->addr, temp_buffer, read_size);
+
+        // 将数据写回写缓冲区
+        ring_buffer_write(&conn->write_buffer, temp_buffer, read_size);
     }
 
-    // Copy data to write buffer
-    memcpy(conn->write_buffer, conn->read_buffer, bytes_read);
-    conn->bytes_to_write = bytes_read;
-
-    // Clear read buffer
-    memset(conn->read_buffer, 0, conn->read_buffer_size);
-    conn->bytes_read = 0;
-
-    // Prepare to write data back to client
+    // 准备写回客户端
     add_write_request(conn);
 }
 
@@ -154,14 +162,11 @@ static void handle_client_io(struct io_uring_cqe *cqe) {
     }
 
     if (conn->state == CONN_STATE_READING) {
-        conn->bytes_read += cqe->res;
-        handle_client_data(conn, conn->bytes_read);
+        atomic_fetch_add(&conn->read_buffer.write_index, cqe->res);
+        handle_client_data(conn, cqe->res);
     } else if (conn->state == CONN_STATE_WRITING) {
-        // Clear write buffer
-        memset(conn->write_buffer, 0, conn->write_buffer_size);
-        conn->bytes_to_write = 0;
-
-        // Prepare to read more data
+        atomic_fetch_add(&conn->write_buffer.read_index, cqe->res);
+        // 继续读取新的数据
         add_read_request(conn);
     }
 }
