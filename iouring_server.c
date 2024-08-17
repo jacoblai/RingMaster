@@ -13,10 +13,6 @@
 #include <signal.h>
 #include <sys/resource.h>
 
-#define QUEUE_DEPTH 32768
-#define MAX_MESSAGE_LEN 2048
-#define INITIAL_BUFFER_SIZE 1024
-
 static volatile sig_atomic_t keep_running = 1;
 
 static on_connect_cb on_connect = NULL;
@@ -36,6 +32,31 @@ static int set_non_blocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags == -1) return -1;
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static struct iovec *bufs;
+static char *buf_base;
+
+static int setup_buffers(struct io_uring *ring) {
+    bufs = calloc(BUFFER_COUNT, sizeof(struct iovec));
+    buf_base = malloc(BUFFER_SIZE * BUFFER_COUNT);
+    if (!bufs || !buf_base) {
+        handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to allocate buffers");
+        return -1;
+    }
+
+    for (int i = 0; i < BUFFER_COUNT; i++) {
+        bufs[i].iov_base = buf_base + (i * BUFFER_SIZE);
+        bufs[i].iov_len = BUFFER_SIZE;
+    }
+
+    int ret = io_uring_register_buffers(ring, bufs, BUFFER_COUNT);
+    if (ret) {
+        handle_error(ERR_URING_INIT_FAILED, "Failed to register buffers");
+        return -1;
+    }
+
+    return 0;
 }
 
 static int add_accept_request(struct io_uring *ring, int server_socket) {
@@ -60,9 +81,10 @@ static struct connection* create_connection(ResourceManager *rm, int fd) {
     memset(conn, 0, sizeof(struct connection));
     conn->fd = fd;
     conn->state = CONN_STATE_READING;
+    conn->buffer_id = -1;  // 初始化为-1，表示未分配缓冲区
 
-    ring_buffer_init(&conn->read_buffer, INITIAL_BUFFER_SIZE);
-    ring_buffer_init(&conn->write_buffer, INITIAL_BUFFER_SIZE);
+    ring_buffer_init(&conn->read_buffer, BUFFER_SIZE);
+    ring_buffer_init(&conn->write_buffer, BUFFER_SIZE);
 
     if (conn->read_buffer.buffer == NULL || conn->write_buffer.buffer == NULL) {
         handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to initialize buffers");
@@ -84,17 +106,14 @@ static void close_and_free_connection(ResourceManager *rm, struct connection *co
 
             struct sockaddr_in client_addr = conn->addr;
 
-            // 保存当前的 errno
             int saved_errno = errno;
 
             if (on_disconnect) {
                 on_disconnect(&client_addr);
             }
 
-            // 恢复 errno
             errno = saved_errno;
 
-            // 确保这些操作总是被执行
             ring_buffer_destroy(&conn->read_buffer);
             ring_buffer_destroy(&conn->write_buffer);
             memory_pool_free(rm->connection_pool, conn);
@@ -109,19 +128,24 @@ static int add_read_request(struct io_uring *ring, struct connection *conn) {
         return -1;
     }
 
-    size_t buf_size = ring_buffer_free_space(&conn->read_buffer);
-    if (buf_size == 0) {
-        if (ring_buffer_write(&conn->read_buffer, "", 0) != 0) {
-            handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to resize read buffer");
+    // 使用固定缓冲区进行读取
+    int buf_index = conn->buffer_id;
+    if (buf_index == -1) {
+        // 如果连接还没有分配缓冲区，我们需要分配一个
+        for (int i = 0; i < BUFFER_COUNT; i++) {
+            if (bufs[i].iov_base != NULL) {
+                buf_index = i;
+                conn->buffer_id = i;
+                break;
+            }
+        }
+        if (buf_index == -1) {
+            handle_error(ERR_RESOURCE_INIT_FAILED, "No available buffer");
             return -1;
         }
-        buf_size = ring_buffer_free_space(&conn->read_buffer);
     }
 
-    size_t write_index = atomic_load(&conn->read_buffer.write_index) % conn->read_buffer.capacity;
-    char* buf = &conn->read_buffer.buffer[write_index];
-
-    io_uring_prep_recv(sqe, conn->fd, buf, buf_size, 0);
+    io_uring_prep_read_fixed(sqe, conn->fd, bufs[buf_index].iov_base, BUFFER_SIZE, 0, buf_index);
     io_uring_sqe_set_data(sqe, conn);
     conn->state = CONN_STATE_READING;
     return 0;
@@ -139,6 +163,7 @@ static int add_write_request(struct io_uring *ring, struct connection *conn) {
         return add_read_request(ring, conn);
     }
 
+    // 使用 io_uring_prep_send 替代 io_uring_prep_send_zc
     size_t read_index = atomic_load(&conn->write_buffer.read_index) % conn->write_buffer.capacity;
     char* buf = &conn->write_buffer.buffer[read_index];
 
@@ -149,25 +174,17 @@ static int add_write_request(struct io_uring *ring, struct connection *conn) {
 }
 
 static void handle_client_data(ResourceManager *rm, struct connection *conn, ssize_t bytes_read) {
-    if (bytes_read <= 0 || bytes_read > MAX_MESSAGE_LEN) {
-        // 处理错误情况
-        fprintf(stderr, "Invalid data received: %zd bytes\n", bytes_read);
+    if (bytes_read <= 0) {
         close_and_free_connection(rm, conn);
         return;
     }
 
-    atomic_fetch_add(&conn->read_buffer.write_index, bytes_read);
-
     if (on_data) {
-        char temp_buffer[MAX_MESSAGE_LEN];
-        size_t read_size = ring_buffer_read(&conn->read_buffer, temp_buffer, bytes_read);
-        if (read_size > 0) {
-            on_data(&conn->addr, temp_buffer, read_size);
-            if (ring_buffer_write(&conn->write_buffer, temp_buffer, read_size) != 0) {
-                fprintf(stderr, "Failed to write data to buffer\n");
-                close_and_free_connection(rm, conn);
-                return;
-            }
+        on_data(&conn->addr, bufs[conn->buffer_id].iov_base, bytes_read);
+        if (ring_buffer_write(&conn->write_buffer, bufs[conn->buffer_id].iov_base, bytes_read) != 0) {
+            fprintf(stderr, "Failed to write data to buffer\n");
+            close_and_free_connection(rm, conn);
+            return;
         }
     }
 
@@ -286,6 +303,11 @@ int start_server(int port) {
         return 1;
     }
 
+    if (setup_buffers(rm.ring) < 0) {
+        cleanup_resource_manager(&rm);
+        return 1;
+    }
+
     if (add_accept_request(rm.ring, rm.server_socket) < 0) {
         handle_error(ERR_RESOURCE_INIT_FAILED, "Failed to add initial accept request");
         cleanup_resource_manager(&rm);
@@ -298,27 +320,18 @@ int start_server(int port) {
         io_uring_submit(rm.ring);
 
         struct io_uring_cqe *cqe;
-        struct __kernel_timespec ts = {
-            .tv_sec = 0,
-            .tv_nsec = 100000000  // 100ms
-        };
-        int ret = io_uring_wait_cqe_timeout(rm.ring, &cqe, &ts);
+        int ret = io_uring_wait_cqe(rm.ring, &cqe);
 
         if (ret < 0) {
             if (ret == -EINTR) {
                 continue;
             }
-            if (ret == -ETIME) {
-                continue;
-            }
-            handle_error(ERR_URING_INIT_FAILED, "io_uring_wait_cqe_timeout failed");
+            handle_error(ERR_URING_INIT_FAILED, "io_uring_wait_cqe failed");
             break;
         }
 
-        if (ret == 0) {  // We got a completion event
-            handle_completion_event(&rm, cqe);
-            io_uring_cqe_seen(rm.ring, cqe);
-        }
+        handle_completion_event(&rm, cqe);
+        io_uring_cqe_seen(rm.ring, cqe);
 
         if (!keep_running) {
             break;
@@ -327,5 +340,7 @@ int start_server(int port) {
 
     printf("Shutting down server...\n");
     cleanup_resource_manager(&rm);
+    free(bufs);
+    free(buf_base);
     return 0;
 }

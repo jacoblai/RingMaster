@@ -3,10 +3,13 @@
 
 #include <netinet/in.h>
 #include "ring_buffer.h"
+#include <liburing.h>
 #include <signal.h>
 
 #define MAX_CONNECTIONS 1000000
 #define QUEUE_DEPTH 32768
+#define BUFFER_SIZE 4096
+#define BUFFER_COUNT 1024
 
 extern int max_connections;
 
@@ -25,6 +28,7 @@ struct connection {
     RingBuffer read_buffer;
     RingBuffer write_buffer;
     enum connection_state state;
+    int buffer_id;  // 用于零拷贝操作的缓冲区ID
 };
 
 void set_on_connect(on_connect_cb cb);
