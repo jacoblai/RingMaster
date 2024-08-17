@@ -98,12 +98,13 @@ int ring_buffer_write(RingBuffer* rb, const char* data, size_t len) {
 
     if (ring_buffer_free_space(rb) < len) {
         size_t new_size = rb->capacity;
-        while (new_size - ring_buffer_used_space(rb) < len) {
+        size_t required_size = ring_buffer_used_space(rb) + len;
+        while (new_size < required_size) {
             if (new_size > MAX_BUFFER_SIZE / 2) {
                 pthread_mutex_unlock(&rb->mutex);
                 return -1;  // Prevent overflow
             }
-            new_size *= 2;
+            new_size = new_size * 3 / 2;  // Grow by 50% each time
         }
         if (ring_buffer_resize(rb, new_size) != 0) {
             pthread_mutex_unlock(&rb->mutex);

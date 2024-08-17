@@ -41,16 +41,62 @@ static struct iovec *bufs;
 static char *buf_base;
 static unsigned char buffer_bitmap[BITMAP_SIZE];
 
+// 新增：缓冲区池
+typedef struct {
+    char* buffer;
+    int is_used;
+} BufferPoolItem;
+
+#define BUFFER_POOL_SIZE 1024
+static BufferPoolItem buffer_pool[BUFFER_POOL_SIZE];
+
+static void init_buffer_pool() {
+    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
+        buffer_pool[i].buffer = malloc(BUFFER_SIZE);
+        buffer_pool[i].is_used = 0;
+    }
+}
+
+static char* get_buffer_from_pool() {
+    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
+        if (!buffer_pool[i].is_used) {
+            buffer_pool[i].is_used = 1;
+            return buffer_pool[i].buffer;
+        }
+    }
+    return NULL;
+}
+
+static void return_buffer_to_pool(char* buffer) {
+    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
+        if (buffer_pool[i].buffer == buffer) {
+            buffer_pool[i].is_used = 0;
+            return;
+        }
+    }
+}
+
+static void cleanup_buffer_pool() {
+    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
+        free(buffer_pool[i].buffer);
+    }
+}
+
 static int setup_buffers(struct io_uring *ring) {
+    init_buffer_pool();
+
     bufs = calloc(BUFFER_COUNT, sizeof(struct iovec));
-    buf_base = malloc(BUFFER_SIZE * BUFFER_COUNT);
-    if (!bufs || !buf_base) {
+    if (!bufs) {
         handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to allocate buffers");
         return -1;
     }
 
     for (int i = 0; i < BUFFER_COUNT; i++) {
-        bufs[i].iov_base = buf_base + (i * BUFFER_SIZE);
+        bufs[i].iov_base = get_buffer_from_pool();
+        if (!bufs[i].iov_base) {
+            handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to get buffer from pool");
+            return -1;
+        }
         bufs[i].iov_len = BUFFER_SIZE;
     }
 
@@ -289,6 +335,12 @@ void graceful_shutdown(void) {
     keep_running = 0;
 }
 
+void cleanup_resources(ResourceManager* rm) {
+    cleanup_resource_manager(rm);
+    free(bufs);
+    cleanup_buffer_pool();
+}
+
 int start_server(int port) {
     printf("Starting server on port %d\n", port);
 
@@ -325,7 +377,7 @@ int start_server(int port) {
     }
 
     if (setup_buffers(rm.ring) < 0) {
-        cleanup_resource_manager(&rm);
+        cleanup_resources(&rm);
         return 1;
     }
 
@@ -360,7 +412,7 @@ int start_server(int port) {
     }
 
     printf("Shutting down server...\n");
-    cleanup_resource_manager(&rm);
+    cleanup_resources(&rm);
     free(bufs);
     free(buf_base);
     return 0;
