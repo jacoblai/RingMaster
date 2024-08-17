@@ -26,7 +26,7 @@ static on_connect_cb on_connect = NULL;
 static on_disconnect_cb on_disconnect = NULL;
 static on_data_cb on_data = NULL;
 
-static volatile int keep_running = 1;
+static volatile sig_atomic_t keep_running = 1;
 
 void set_on_connect(on_connect_cb cb) { on_connect = cb; }
 void set_on_disconnect(on_disconnect_cb cb) { on_disconnect = cb; }
@@ -134,10 +134,16 @@ static void close_and_free_connection(struct connection *conn) {
         if (connections[fd] == conn) {
             connections[fd] = NULL;
             close(fd);
-            put_connection(conn);
+
+            // 保存客户端地址信息
+            struct sockaddr_in client_addr = conn->addr;
+
+            // 调用 on_disconnect 回调
             if (on_disconnect) {
-                on_disconnect(&conn->addr);
+                on_disconnect(&client_addr);
             }
+
+            put_connection(conn);
         }
     }
 }
@@ -250,9 +256,11 @@ static void handle_accept(struct io_uring_cqe *cqe) {
         return;
     }
 
-    connections[client_socket] = conn;
+    // 立即设置客户端地址信息
     socklen_t addr_len = sizeof(conn->addr);
     getpeername(client_socket, (struct sockaddr*)&conn->addr, &addr_len);
+
+    connections[client_socket] = conn;
 
     if (on_connect) {
         on_connect(&conn->addr);
@@ -271,14 +279,34 @@ static void handle_completion_event(struct io_uring_cqe *cqe) {
     }
 }
 
+void graceful_shutdown(void) {
+    keep_running = 0;
+}
+
 int start_server(int port) {
     printf("Starting server on port %d\n", port);
 
-    signal(SIGINT, sigint_handler);
-
-    if (set_system_limits() == -1) {
-        fprintf(stderr, "Failed to set system limits\n");
+    struct sigaction sa;
+    sa.sa_handler = sigint_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    if (sigaction(SIGINT, &sa, NULL) == -1) {
+        perror("sigaction");
         return 1;
+    }
+
+    // Get current file descriptor limit
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
+        printf("Current file descriptor limit: %llu\n", (unsigned long long)rl.rlim_cur);
+        // Set max_connections to be slightly less than the file descriptor limit
+        max_connections = rl.rlim_cur > 1000 ? rl.rlim_cur - 1000 : rl.rlim_cur / 2;
+        printf("Setting max connections to: %d\n", max_connections);
+    } else {
+        perror("getrlimit");
+        // If we can't get the limit, use a conservative default
+        max_connections = 1000;
+        printf("Unable to get file descriptor limit. Setting max connections to: %d\n", max_connections);
     }
 
     connections = calloc(max_connections, sizeof(struct connection*));
@@ -320,17 +348,33 @@ int start_server(int port) {
         io_uring_submit(&ring);
 
         struct io_uring_cqe *cqe;
-        int ret = io_uring_wait_cqe(&ring, &cqe);
+        struct __kernel_timespec ts = {
+            .tv_sec = 0,
+            .tv_nsec = 100000000  // 100ms
+        };
+        int ret = io_uring_wait_cqe_timeout(&ring, &cqe, &ts);
+
         if (ret < 0) {
-            perror("io_uring_wait_cqe");
             if (ret == -EINTR) {
                 continue;
             }
+            if (ret == -ETIME) {
+                // Timeout occurred, just continue the loop
+                continue;
+            }
+            perror("io_uring_wait_cqe_timeout");
             break;
         }
 
-        handle_completion_event(cqe);
-        io_uring_cqe_seen(&ring, cqe);
+        if (ret == 0) {  // We got a completion event
+            handle_completion_event(cqe);
+            io_uring_cqe_seen(&ring, cqe);
+        }
+
+        // Periodically check if we should exit
+        if (!keep_running) {
+            break;
+        }
     }
 
     printf("Shutting down server...\n");
