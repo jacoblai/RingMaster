@@ -4,10 +4,15 @@
 #include <stdint.h>
 
 #define MIN_BUFFER_SIZE 64
+#define MAX_BUFFER_SIZE ((size_t)-1 >> 1)  // 最大缓冲区大小为 SIZE_MAX / 2
 
 static int ring_buffer_resize(RingBuffer* rb, size_t new_size) {
     if (new_size <= rb->capacity) {
         return -1;  // New size must be larger
+    }
+
+    if (new_size > MAX_BUFFER_SIZE) {
+        return -1;  // Prevent overflow
     }
 
     char* new_buffer = realloc(rb->buffer, new_size);
@@ -36,6 +41,9 @@ static int ring_buffer_resize(RingBuffer* rb, size_t new_size) {
 void ring_buffer_init(RingBuffer* rb, size_t initial_size) {
     if (initial_size < MIN_BUFFER_SIZE) {
         initial_size = MIN_BUFFER_SIZE;
+    }
+    if (initial_size > MAX_BUFFER_SIZE) {
+        initial_size = MAX_BUFFER_SIZE;
     }
 
     rb->buffer = malloc(initial_size);
@@ -89,8 +97,12 @@ int ring_buffer_write(RingBuffer* rb, const char* data, size_t len) {
     pthread_mutex_lock(&rb->mutex);
 
     if (ring_buffer_free_space(rb) < len) {
-        size_t new_size = rb->capacity * 2;
+        size_t new_size = rb->capacity;
         while (new_size - ring_buffer_used_space(rb) < len) {
+            if (new_size > MAX_BUFFER_SIZE / 2) {
+                pthread_mutex_unlock(&rb->mutex);
+                return -1;  // Prevent overflow
+            }
             new_size *= 2;
         }
         if (ring_buffer_resize(rb, new_size) != 0) {
@@ -147,6 +159,8 @@ size_t ring_buffer_read(RingBuffer* rb, char* data, size_t len) {
 }
 
 int ring_buffer_peek(const RingBuffer* rb, char* data, size_t len) {
+    pthread_mutex_lock(&rb->mutex);
+
     size_t available = ring_buffer_used_space(rb);
     size_t peek_size = (len < available) ? len : available;
     size_t read_index = atomic_load(&rb->read_index) % rb->capacity;
@@ -161,5 +175,6 @@ int ring_buffer_peek(const RingBuffer* rb, char* data, size_t len) {
         memcpy(data + first_part, rb->buffer, peek_size - first_part);
     }
 
+    pthread_mutex_unlock(&rb->mutex);
     return peek_size;
 }
