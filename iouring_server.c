@@ -12,6 +12,9 @@
 #include <liburing.h>
 #include <signal.h>
 #include <sys/resource.h>
+#include <limits.h>
+
+#define BITMAP_SIZE ((BUFFER_COUNT + CHAR_BIT - 1) / CHAR_BIT)
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -36,19 +39,13 @@ static int set_non_blocking(int fd) {
 
 static struct iovec *bufs;
 static char *buf_base;
+static unsigned char buffer_bitmap[BITMAP_SIZE];
 
 static int setup_buffers(struct io_uring *ring) {
     bufs = calloc(BUFFER_COUNT, sizeof(struct iovec));
-    if (!bufs) {
-        handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to allocate buffer array");
-        return -1;
-    }
-
     buf_base = malloc(BUFFER_SIZE * BUFFER_COUNT);
-    if (!buf_base) {
-        handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to allocate buffer base");
-        free(bufs);  // Free the previously allocated buffer array
-        bufs = NULL;
+    if (!bufs || !buf_base) {
+        handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to allocate buffers");
         return -1;
     }
 
@@ -60,14 +57,32 @@ static int setup_buffers(struct io_uring *ring) {
     int ret = io_uring_register_buffers(ring, bufs, BUFFER_COUNT);
     if (ret) {
         handle_error(ERR_URING_INIT_FAILED, "Failed to register buffers");
-        free(bufs);
-        free(buf_base);
-        bufs = NULL;
-        buf_base = NULL;
         return -1;
     }
 
+    memset(buffer_bitmap, 0, BITMAP_SIZE);
+
     return 0;
+}
+
+static int get_free_buffer_id() {
+    for (int i = 0; i < BUFFER_COUNT; i++) {
+        int byte_index = i / CHAR_BIT;
+        int bit_index = i % CHAR_BIT;
+        if (!(buffer_bitmap[byte_index] & (1 << bit_index))) {
+            buffer_bitmap[byte_index] |= (1 << bit_index);
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void release_buffer_id(int id) {
+    if (id >= 0 && id < BUFFER_COUNT) {
+        int byte_index = id / CHAR_BIT;
+        int bit_index = id % CHAR_BIT;
+        buffer_bitmap[byte_index] &= ~(1 << bit_index);
+    }
 }
 
 static int add_accept_request(struct io_uring *ring, int server_socket) {
@@ -92,7 +107,7 @@ static struct connection* create_connection(ResourceManager *rm, int fd) {
     memset(conn, 0, sizeof(struct connection));
     conn->fd = fd;
     conn->state = CONN_STATE_READING;
-    conn->buffer_id = -1;  // 初始化为-1，表示未分配缓冲区
+    conn->buffer_id = -1;
 
     ring_buffer_init(&conn->read_buffer, BUFFER_SIZE);
     ring_buffer_init(&conn->write_buffer, BUFFER_SIZE);
@@ -127,6 +142,9 @@ static void close_and_free_connection(ResourceManager *rm, struct connection *co
 
             ring_buffer_destroy(&conn->read_buffer);
             ring_buffer_destroy(&conn->write_buffer);
+            if (conn->buffer_id >= 0) {
+                release_buffer_id(conn->buffer_id);
+            }
             memory_pool_free(rm->connection_pool, conn);
         }
     }
@@ -139,21 +157,14 @@ static int add_read_request(struct io_uring *ring, struct connection *conn) {
         return -1;
     }
 
-    // 使用固定缓冲区进行读取
     int buf_index = conn->buffer_id;
     if (buf_index == -1) {
-        // 如果连接还没有分配缓冲区，我们需要分配一个
-        for (int i = 0; i < BUFFER_COUNT; i++) {
-            if (bufs[i].iov_base != NULL) {
-                buf_index = i;
-                conn->buffer_id = i;
-                break;
-            }
-        }
+        buf_index = get_free_buffer_id();
         if (buf_index == -1) {
             handle_error(ERR_RESOURCE_INIT_FAILED, "No available buffer");
             return -1;
         }
+        conn->buffer_id = buf_index;
     }
 
     io_uring_prep_read_fixed(sqe, conn->fd, bufs[buf_index].iov_base, BUFFER_SIZE, 0, buf_index);
@@ -174,7 +185,6 @@ static int add_write_request(struct io_uring *ring, struct connection *conn) {
         return add_read_request(ring, conn);
     }
 
-    // 使用 io_uring_prep_send 替代 io_uring_prep_send_zc
     size_t read_index = atomic_load(&conn->write_buffer.read_index) % conn->write_buffer.capacity;
     char* buf = &conn->write_buffer.buffer[read_index];
 
