@@ -4,17 +4,18 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <string.h>
 
 static int setup_listening_socket(int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock == -1) {
-        handle_error(ERR_SOCKET_CREATE_FAILED, "Failed to create socket");
+        handle_error(ERR_SOCKET_CREATE_FAILED, "Failed to create server socket");
         return -1;
     }
 
     int enable = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-        handle_error(ERR_SOCKET_CREATE_FAILED, "setsockopt(SO_REUSEADDR) failed");
+        handle_error(ERR_SOCKET_CREATE_FAILED, "setsockopt(SO_REUSEADDR) failed for server socket");
         close(sock);
         return -1;
     }
@@ -26,13 +27,13 @@ static int setup_listening_socket(int port) {
     };
 
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        handle_error(ERR_SOCKET_BIND_FAILED, "Failed to bind to port");
+        handle_error(ERR_SOCKET_BIND_FAILED, "Failed to bind server socket to port");
         close(sock);
         return -1;
     }
 
     if (listen(sock, SOMAXCONN) < 0) {
-        handle_error(ERR_SOCKET_LISTEN_FAILED, "Failed to listen on socket");
+        handle_error(ERR_SOCKET_LISTEN_FAILED, "Failed to listen on server socket");
         close(sock);
         return -1;
     }
@@ -70,6 +71,7 @@ int allocate_resource(ResourceManager* rm, ResourceType type) {
         case RESOURCE_SERVER_SOCKET:
             rm->server_socket = setup_listening_socket(rm->port);
             if (rm->server_socket < 0) {
+                handle_error(ERR_RESOURCE_INIT_FAILED, "Failed to set up server socket");
                 return -1;
             }
             break;
@@ -91,7 +93,7 @@ int allocate_resource(ResourceManager* rm, ResourceType type) {
         case RESOURCE_CONNECTION_POOL:
             rm->connection_pool = memory_pool_create(sizeof(struct connection), 1000, 64);
             if (!rm->connection_pool) {
-                handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to create connection pool");
+                handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to create connection memory pool");
                 return -1;
             }
             break;
@@ -105,7 +107,7 @@ int allocate_resource(ResourceManager* rm, ResourceType type) {
             break;
 
         default:
-            handle_error(ERR_INVALID_ARGUMENT, "Invalid resource type");
+            handle_error(ERR_INVALID_ARGUMENT, "Invalid resource type requested");
             return -1;
     }
 
@@ -144,7 +146,7 @@ void free_resource(ResourceManager* rm, ResourceType type) {
             break;
 
         default:
-            handle_error(ERR_INVALID_ARGUMENT, "Invalid resource type");
+            handle_error(ERR_INVALID_ARGUMENT, "Attempt to free invalid resource type");
             break;
     }
 }
