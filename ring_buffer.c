@@ -129,12 +129,16 @@ int ring_buffer_write(RingBuffer* rb, const char* data, size_t len) {
 }
 
 size_t ring_buffer_read(RingBuffer* rb, char* data, size_t len) {
-    pthread_mutex_lock(&rb->mutex);
-
     size_t available = ring_buffer_used_space(rb);
     size_t read_size = (len < available) ? len : available;
-    size_t read_index = atomic_load_explicit(&rb->read_index, memory_order_relaxed) % rb->capacity;
 
+    if (read_size == 0) {
+        return 0;
+    }
+
+    pthread_mutex_lock(&rb->mutex);
+
+    size_t read_index = atomic_load_explicit(&rb->read_index, memory_order_relaxed) % rb->capacity;
     size_t end = (read_index + read_size) % rb->capacity;
 
     if (end > read_index) {
@@ -159,12 +163,14 @@ size_t ring_buffer_read(RingBuffer* rb, char* data, size_t len) {
 }
 
 int ring_buffer_peek(const RingBuffer* rb, char* data, size_t len) {
-    pthread_mutex_lock(&rb->mutex);
-
     size_t available = ring_buffer_used_space(rb);
     size_t peek_size = (len < available) ? len : available;
-    size_t read_index = atomic_load(&rb->read_index) % rb->capacity;
 
+    if (peek_size == 0) {
+        return 0;
+    }
+
+    size_t read_index = atomic_load(&rb->read_index) % rb->capacity;
     size_t end = (read_index + peek_size) % rb->capacity;
 
     if (end > read_index) {
@@ -175,6 +181,5 @@ int ring_buffer_peek(const RingBuffer* rb, char* data, size_t len) {
         memcpy(data + first_part, rb->buffer, peek_size - first_part);
     }
 
-    pthread_mutex_unlock(&rb->mutex);
     return peek_size;
 }
