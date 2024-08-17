@@ -39,9 +39,16 @@ static char *buf_base;
 
 static int setup_buffers(struct io_uring *ring) {
     bufs = calloc(BUFFER_COUNT, sizeof(struct iovec));
+    if (!bufs) {
+        handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to allocate buffer array");
+        return -1;
+    }
+
     buf_base = malloc(BUFFER_SIZE * BUFFER_COUNT);
-    if (!bufs || !buf_base) {
-        handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to allocate buffers");
+    if (!buf_base) {
+        handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to allocate buffer base");
+        free(bufs);  // Free the previously allocated buffer array
+        bufs = NULL;
         return -1;
     }
 
@@ -53,6 +60,10 @@ static int setup_buffers(struct io_uring *ring) {
     int ret = io_uring_register_buffers(ring, bufs, BUFFER_COUNT);
     if (ret) {
         handle_error(ERR_URING_INIT_FAILED, "Failed to register buffers");
+        free(bufs);
+        free(buf_base);
+        bufs = NULL;
+        buf_base = NULL;
         return -1;
     }
 
