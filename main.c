@@ -1,10 +1,8 @@
-#include <ctype.h>
-
 #include "iouring_server.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <arpa/inet.h>
+#include <ctype.h>
 
 void on_connect_handler(struct sockaddr_in *addr) {
     char ip[INET_ADDRSTRLEN];
@@ -23,7 +21,7 @@ void on_data_handler(struct sockaddr_in *addr, const char *data, size_t len) {
     inet_ntop(AF_INET, &(addr->sin_addr), ip, INET_ADDRSTRLEN);
     printf("Received %zu bytes from %s:%d\n", len, ip, ntohs(addr->sin_port));
     printf("Data: ");
-    for (size_t i = 0; i < len && i < 100; i++) {  // 限制打印的数据量
+    for (size_t i = 0; i < len && i < 100; i++) {
         if (isprint(data[i])) {
             putchar(data[i]);
         } else {

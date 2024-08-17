@@ -20,6 +20,10 @@ add_executable(iouring_server
         ring_buffer.h
         memory_pool.c
         memory_pool.h
+        error.c
+        error.h
+        resource_manager.c
+        resource_manager.h
 )
 
 # 链接 liburing 和 pthread
