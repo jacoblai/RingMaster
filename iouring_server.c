@@ -10,13 +10,17 @@
 #include <arpa/inet.h>
 #include <liburing.h>
 #include <signal.h>
+#include <sys/resource.h>
 
-#define QUEUE_DEPTH 256
+#define QUEUE_DEPTH 32768
+#define MAX_CONNECTIONS 1000000
+#define MAX_MESSAGE_LEN 2048
 
+int max_connections = MAX_CONNECTIONS;
 volatile int keep_running = 1;
 static struct io_uring ring;
 static int server_socket;
-static struct connection* connections[MAX_CONNECTIONS];
+static struct connection** connections = NULL;
 
 static on_connect_cb on_connect = NULL;
 static on_disconnect_cb on_disconnect = NULL;
@@ -30,6 +34,65 @@ static void sigint_handler(int sig) {
     (void)sig;
     printf("Received SIGINT, shutting down...\n");
     keep_running = 0;
+}
+
+static int write_to_file(const char *filename, const char *value) {
+    FILE *file = fopen(filename, "w");
+    if (file == NULL) {
+        perror("Error opening file");
+        return -1;
+    }
+    fprintf(file, "%s", value);
+    fclose(file);
+    return 0;
+}
+
+static int set_system_limits() {
+    struct rlimit rl;
+    int warnings = 0;
+
+    // 尝试设置最大文件描述符数
+    rl.rlim_cur = rl.rlim_max = MAX_CONNECTIONS;
+    if (setrlimit(RLIMIT_NOFILE, &rl) == -1) {
+        fprintf(stderr, "Warning: setrlimit(RLIMIT_NOFILE) failed: %s\n", strerror(errno));
+        warnings++;
+    }
+
+    // 尝试设置最大进程数
+    rl.rlim_cur = rl.rlim_max = MAX_CONNECTIONS;
+    if (setrlimit(RLIMIT_NPROC, &rl) == -1) {
+        fprintf(stderr, "Warning: setrlimit(RLIMIT_NPROC) failed: %s\n", strerror(errno));
+        warnings++;
+    }
+
+    // 尝试设置 TCP 相关参数
+    if (write_to_file("/proc/sys/net/ipv4/tcp_max_syn_backlog", "65536") == -1) {
+        fprintf(stderr, "Warning: Failed to set tcp_max_syn_backlog\n");
+        warnings++;
+    }
+    if (write_to_file("/proc/sys/net/ipv4/tcp_fin_timeout", "10") == -1) {
+        fprintf(stderr, "Warning: Failed to set tcp_fin_timeout\n");
+        warnings++;
+    }
+    if (write_to_file("/proc/sys/net/ipv4/tcp_tw_reuse", "1") == -1) {
+        fprintf(stderr, "Warning: Failed to set tcp_tw_reuse\n");
+        warnings++;
+    }
+
+    // 尝试增加系统范围的文件描述符限制
+    if (write_to_file("/proc/sys/fs/file-max", "2097152") == -1) {
+        fprintf(stderr, "Warning: Failed to set file-max\n");
+        warnings++;
+    }
+
+    if (warnings > 0) {
+        fprintf(stderr, "Some system limits could not be set. The server may not perform optimally.\n");
+        fprintf(stderr, "To set these limits, try running the program with sudo or as root.\n");
+    } else {
+        printf("System limits set for high concurrency\n");
+    }
+
+    return 0;  // 即使有警告也继续运行
 }
 
 static int setup_listening_socket(int port) {
@@ -104,7 +167,6 @@ static int add_write_request(struct connection *conn) {
 
     size_t data_size = ring_buffer_used_space(&conn->write_buffer);
     if (data_size == 0) {
-        // 如果没有数据要写，就切换回读取状态
         return add_read_request(conn);
     }
 
@@ -120,14 +182,14 @@ static void close_and_free_connection(struct connection *conn) {
     if (!conn) return;
 
     int fd = conn->fd;
-    if (fd >= 0 && fd < MAX_CONNECTIONS) {
+    if (fd >= 0 && fd < max_connections) {
         if (connections[fd] == conn) {
             connections[fd] = NULL;
             if (on_disconnect) {
                 on_disconnect(&conn->addr);
             }
             close(fd);
-            put_connection(conn);  // Return to the pool
+            put_connection(conn);
         }
     }
 }
@@ -138,11 +200,9 @@ static void handle_client_data(struct connection *conn, ssize_t bytes_read) {
         size_t read_size = ring_buffer_read(&conn->read_buffer, temp_buffer, bytes_read);
         on_data(&conn->addr, temp_buffer, read_size);
 
-        // 将数据写回写缓冲区
         ring_buffer_write(&conn->write_buffer, temp_buffer, read_size);
     }
 
-    // 准备写回客户端
     add_write_request(conn);
 }
 
@@ -166,7 +226,6 @@ static void handle_client_io(struct io_uring_cqe *cqe) {
         handle_client_data(conn, cqe->res);
     } else if (conn->state == CONN_STATE_WRITING) {
         atomic_fetch_add(&conn->write_buffer.read_index, cqe->res);
-        // 继续读取新的数据
         add_read_request(conn);
     }
 }
@@ -178,13 +237,13 @@ static void handle_accept(struct io_uring_cqe *cqe) {
         return;
     }
 
-    if (client_socket >= MAX_CONNECTIONS) {
+    if (client_socket >= max_connections) {
         fprintf(stderr, "Client socket %d is out of range\n", client_socket);
         close(client_socket);
         return;
     }
 
-    struct connection *conn = get_connection();  // Get from the pool
+    struct connection *conn = get_connection();
     if (!conn) {
         fprintf(stderr, "Failed to get connection from pool\n");
         close(client_socket);
@@ -219,17 +278,27 @@ int start_server(int port) {
 
     signal(SIGINT, sigint_handler);
 
-    init_pool();  // Initialize the connection pool
+    set_system_limits();  // 移除了错误检查，因为我们总是返回 0
+
+    connections = calloc(max_connections, sizeof(struct connection*));
+    if (!connections) {
+        perror("Failed to allocate connections array");
+        return 1;
+    }
+
+    init_pool();
 
     server_socket = setup_listening_socket(port);
     if (server_socket < 0) {
         fprintf(stderr, "Failed to set up listening socket\n");
+        free(connections);
         return 1;
     }
 
     if (io_uring_queue_init(QUEUE_DEPTH, &ring, 0) < 0) {
         perror("io_uring_queue_init");
         close(server_socket);
+        free(connections);
         return 1;
     }
 
@@ -237,6 +306,7 @@ int start_server(int port) {
         fprintf(stderr, "Failed to add initial accept request\n");
         io_uring_queue_exit(&ring);
         close(server_socket);
+        free(connections);
         return 1;
     }
 
@@ -263,11 +333,12 @@ int start_server(int port) {
     io_uring_queue_exit(&ring);
     close(server_socket);
 
-    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+    for (int i = 0; i < max_connections; i++) {
         if (connections[i]) {
             close_and_free_connection(connections[i]);
         }
     }
 
+    free(connections);
     return 0;
 }

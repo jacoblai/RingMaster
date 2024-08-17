@@ -4,10 +4,8 @@
 #include "iouring_server.h"
 #include <pthread.h>
 
-#define POOL_MAX_SIZE 1000
-
 typedef struct {
-    struct connection *connections[POOL_MAX_SIZE];
+    struct connection **connections;
     int count;
     pthread_mutex_t mutex;
 } ConnectionPool;

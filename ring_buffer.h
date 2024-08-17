@@ -4,7 +4,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 
-#define RING_BUFFER_SIZE 4096  // Must be a power of 2
+#define RING_BUFFER_SIZE 4096
 #define RING_BUFFER_MASK (RING_BUFFER_SIZE - 1)
 
 typedef struct {

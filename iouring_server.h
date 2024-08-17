@@ -4,7 +4,7 @@
 #include <netinet/in.h>
 #include "ring_buffer.h"
 
-#define MAX_CONNECTIONS 1024
+extern int max_connections;
 
 typedef void (*on_connect_cb)(struct sockaddr_in *);
 typedef void (*on_disconnect_cb)(struct sockaddr_in *);
