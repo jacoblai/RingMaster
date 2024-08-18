@@ -20,24 +20,14 @@ void on_disconnect_handler(struct sockaddr_in *addr) {
 
 // 接收到数据时的回调函数
 void on_data_handler(struct connection* conn, const char *data, size_t len, struct ResourceManager* rm) {
+    (void)rm;  // 显式忽略 rm 参数，消除未使用参数的警告
+
     char ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &(conn->addr.sin_addr), ip, INET_ADDRSTRLEN);
 
     // printf("Received %zu bytes from %s:%d\n", len, ip, ntohs(conn->addr.sin_port));
-    //
-    // // 为了调试目的，打印接收到的数据
-    // printf("Data: ");
-    // for (size_t i = 0; i < len && i < 100; i++) {
-    //     if (isprint(data[i])) {
-    //         putchar(data[i]);
-    //     } else {
-    //         printf("\\x%02x", (unsigned char)data[i]);
-    //     }
-    // }
-    // if (len > 100) printf("...");
-    // printf("\n");
 
-    // Echo 服务器逻辑：将接收到的数据写入写缓冲区
+    // Echo the data back
     if (ring_buffer_write(&conn->write_buffer, data, len) != 0) {
         fprintf(stderr, "Failed to write data to buffer for echoing\n");
     }

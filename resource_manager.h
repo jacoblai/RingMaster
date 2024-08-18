@@ -14,7 +14,7 @@ typedef enum {
 } ResourceType;
 
 // 资源管理器结构体
-typedef struct {
+typedef struct ResourceManager {
     int server_socket;
     struct io_uring* ring;
     MemoryPool* connection_pool;
