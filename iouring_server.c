@@ -19,6 +19,10 @@
 // 用于控制服务器运行的标志
 static volatile sig_atomic_t keep_running = 1;
 
+static int add_accept_request(struct io_uring *ring, int server_socket);
+static int add_read_request(struct io_uring *ring, struct connection *conn);
+static int add_write_request(struct io_uring *ring, struct connection *conn);
+
 // 回调函数指针
 static on_connect_cb on_connect = NULL;
 static on_disconnect_cb on_disconnect = NULL;
@@ -249,7 +253,7 @@ static int add_read_request(struct io_uring *ring, struct connection *conn) {
 static int add_write_request(struct io_uring *ring, struct connection *conn) {
     struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
     if (!sqe) {
-        handle_error(ERR_URING_QUEUE_FULL, "Could not get SQE for write");
+        fprintf(stderr, "Could not get SQE for write\n");
         return -1;
     }
 
@@ -277,12 +281,7 @@ static void handle_client_data(ResourceManager *rm, struct connection *conn, ssi
 
     // 调用数据处理回调
     if (on_data) {
-        on_data(&conn->addr, bufs[conn->buffer_id].iov_base, bytes_read);
-        if (ring_buffer_write(&conn->write_buffer, bufs[conn->buffer_id].iov_base, bytes_read) != 0) {
-            fprintf(stderr, "Failed to write data to buffer\n");
-            close_and_free_connection(rm, conn);
-            return;
-        }
+        on_data(conn, bufs[conn->buffer_id].iov_base, bytes_read, rm);
     }
 
     // 添加写请求

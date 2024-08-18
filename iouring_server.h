@@ -4,19 +4,15 @@
 #include <netinet/in.h>
 #include "ring_buffer.h"
 #include <liburing.h>
-#include <signal.h>
 
 #define MAX_CONNECTIONS 1000000
 #define QUEUE_DEPTH 32768
 #define BUFFER_SIZE 4096
 #define BUFFER_COUNT 1024
 
-extern int max_connections;
-
-// 回调函数类型定义
-typedef void (*on_connect_cb)(struct sockaddr_in *);
-typedef void (*on_disconnect_cb)(struct sockaddr_in *);
-typedef void (*on_data_cb)(struct sockaddr_in *, const char *, size_t);
+// 前向声明
+struct connection;
+struct ResourceManager;
 
 // 连接状态枚举
 enum connection_state {
@@ -33,6 +29,11 @@ struct connection {
     enum connection_state state;
     int buffer_id;  // 用于零拷贝操作的缓冲区ID
 };
+
+// 回调函数类型定义
+typedef void (*on_connect_cb)(struct sockaddr_in *);
+typedef void (*on_disconnect_cb)(struct sockaddr_in *);
+typedef void (*on_data_cb)(struct connection*, const char*, size_t, struct ResourceManager*);
 
 // 设置回调函数
 void set_on_connect(on_connect_cb cb);
