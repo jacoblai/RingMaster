@@ -7,8 +7,8 @@
 
 #define MAX_CONNECTIONS 1000000
 #define QUEUE_DEPTH 32768
-#define BUFFER_SIZE 4096
-#define BUFFER_COUNT 1024
+#define BUFFER_SIZE 1024
+#define BUFFER_COUNT 5000
 
 // 前向声明
 struct connection;

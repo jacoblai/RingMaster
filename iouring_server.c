@@ -57,20 +57,35 @@ typedef struct {
     int is_used;
 } BufferPoolItem;
 
-#define BUFFER_POOL_SIZE 1024
-static BufferPoolItem buffer_pool[BUFFER_POOL_SIZE];
+static BufferPoolItem *buffer_pool = NULL;
+static int buffer_pool_size = 0;
 
-// 初始化缓冲区池
-static void init_buffer_pool() {
-    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
+// 修改初始化缓冲区池的函数
+static int init_buffer_pool(int size) {
+    buffer_pool = calloc(size, sizeof(BufferPoolItem));
+    if (!buffer_pool) {
+        return -1;
+    }
+    buffer_pool_size = size;
+    for (int i = 0; i < size; i++) {
         buffer_pool[i].buffer = malloc(BUFFER_SIZE);
+        if (!buffer_pool[i].buffer) {
+            // 清理已分配的内存并返回错误
+            for (int j = 0; j < i; j++) {
+                free(buffer_pool[j].buffer);
+            }
+            free(buffer_pool);
+            buffer_pool = NULL;
+            return -1;
+        }
         buffer_pool[i].is_used = 0;
     }
+    return 0;
 }
 
-// 从缓冲区池获取一个缓冲区
+// 修改获取缓冲区的函数
 static char* get_buffer_from_pool() {
-    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
+    for (int i = 0; i < buffer_pool_size; i++) {
         if (!buffer_pool[i].is_used) {
             buffer_pool[i].is_used = 1;
             return buffer_pool[i].buffer;
@@ -79,26 +94,23 @@ static char* get_buffer_from_pool() {
     return NULL;
 }
 
-// 将缓冲区返回到池中
-static void return_buffer_to_pool(char* buffer) {
-    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
-        if (buffer_pool[i].buffer == buffer) {
-            buffer_pool[i].is_used = 0;
-            return;
-        }
-    }
-}
-
-// 清理缓冲区池
+// 修改清理缓冲区池的函数
 static void cleanup_buffer_pool() {
-    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
-        free(buffer_pool[i].buffer);
+    if (buffer_pool) {
+        for (int i = 0; i < buffer_pool_size; i++) {
+            free(buffer_pool[i].buffer);
+        }
+        free(buffer_pool);
+        buffer_pool = NULL;
     }
 }
 
 // 设置 io_uring 缓冲区
 static int setup_buffers(struct io_uring *ring) {
-    init_buffer_pool();
+    if (init_buffer_pool(BUFFER_COUNT) < 0) {
+        handle_error(ERR_MEMORY_ALLOC_FAILED, "Failed to initialize buffer pool");
+        return -1;
+    }
 
     // 分配 iovec 数组
     bufs = calloc(BUFFER_COUNT, sizeof(struct iovec));
